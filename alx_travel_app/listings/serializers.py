@@ -11,10 +11,28 @@ class UserSerializer(serializers.ModelSerializer):
 
 class ReviewSerializer(serializers.ModelSerializer):
     reviewer = UserSerializer(read_only=True)
+    listing_id = serializers.UUIDField(write_only=True, required=False)
+    listing = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Review
-        fields = ['review_id', 'reviewer', 'rating', 'comment', 'created_at']
+        fields = ['review_id', 'listing', 'listing_id', 'reviewer', 'rating', 'comment', 'created_at']
+
+    def get_listing(self, obj):
+        """Return basic listing info in read response"""
+        return {
+            'listing_id': obj.listing.listing_id,
+            'title': obj.listing.title
+        }
+
+    def create(self, validated_data):
+        """Create review with listing from write_only field"""
+        listing_id = validated_data.pop('listing_id', None)
+        if listing_id:
+            from .models import Listing
+            listing = Listing.objects.get(listing_id=listing_id)
+            validated_data['listing'] = listing
+        return super().create(validated_data)
 
 
 class ListingSerializer(serializers.ModelSerializer):

@@ -45,7 +45,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
 
     # Local apps
-    'alx_travel_app.listings.apps.ListingsConfig',
+    'listings.apps.ListingsConfig',
 
     # Third-party apps
     'rest_framework',
