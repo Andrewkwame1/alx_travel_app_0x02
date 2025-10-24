@@ -41,7 +41,7 @@ alx_travel_app/
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/aniebietafia/alx_travel_app_0x01.git
+git clone https://github.com/Andrewkwame1/alx_travel_app_0x01.git
 cd alx_travel_app_0x01
 ```
 
@@ -635,9 +635,11 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 For issues, questions, or suggestions, please open an issue on GitHub.
 
+**Repository**: https://github.com/Andrewkwame1/alx_travel_app_0x01
+
 ## Author
 
-ALX Software Engineering Program
+Your Name/Your Organization
 
 ## Learning Resources
 
