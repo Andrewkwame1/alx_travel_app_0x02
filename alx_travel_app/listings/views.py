@@ -1,11 +1,16 @@
 from rest_framework import viewsets
-from rest_framework.permissions import IsAuthenticatedOrReadOnly, IsAuthenticated
+from rest_framework.permissions import IsAuthenticatedOrReadOnly, IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework import status
 from django.db.models import Q
-from .models import Listing, Booking, Review
-from .serializers import ListingSerializer, BookingSerializer, ReviewSerializer
+import logging
+from .models import Listing, Booking, Review, Payment
+from .serializers import ListingSerializer, BookingSerializer, ReviewSerializer, PaymentSerializer
+from .chapa_utils import ChapaAPIClient, create_payment_for_booking, update_payment_status
+from .email_tasks import send_payment_confirmation_email, send_payment_failure_email
+
+logger = logging.getLogger(__name__)
 
 
 class ListingViewSet(viewsets.ModelViewSet):
@@ -90,6 +95,7 @@ class BookingViewSet(viewsets.ModelViewSet):
     Additional actions:
     - GET /api/bookings/my_bookings/ - Get bookings made by the current user
     - PATCH /api/bookings/{id}/cancel/ - Cancel a booking
+    - POST /api/bookings/{id}/initiate_payment/ - Initiate payment for booking
     """
     queryset = Booking.objects.all()
     serializer_class = BookingSerializer
@@ -114,7 +120,10 @@ class BookingViewSet(viewsets.ModelViewSet):
             days = (check_out - check_in).days
             total_price = listing.price_per_night * days
         
-        serializer.save(guest=self.request.user, listing=listing, total_price=total_price)
+        booking = serializer.save(guest=self.request.user, listing=listing, total_price=total_price)
+        
+        # Automatically create a payment record for the booking
+        create_payment_for_booking(booking)
 
     def get_queryset(self):
         """Filter bookings based on user role"""
@@ -177,6 +186,286 @@ class BookingViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(booking)
         return Response(serializer.data)
 
+    @action(detail=True, methods=['post'])
+    def initiate_payment(self, request, pk=None):
+        """
+        Initiate payment for a booking
+        
+        Returns:
+            - checkout_url: URL to redirect user to Chapa payment page
+            - payment_id: Payment ID for reference
+        """
+        booking = self.get_object()
+        
+        # Only guest can initiate payment
+        if booking.guest != request.user:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("You can only initiate payment for your own bookings.")
+        
+        # Check if payment already exists
+        try:
+            payment = booking.payment
+        except Payment.DoesNotExist:
+            payment = create_payment_for_booking(booking)
+        
+        # Only pending payments can be initiated
+        if payment.status != 'pending':
+            return Response(
+                {'detail': f'Cannot initiate payment for {payment.status} payment.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Initialize Chapa API client
+            chapa_client = ChapaAPIClient()
+            
+            # Initiate payment with Chapa
+            result = chapa_client.initiate_payment(payment, booking)
+            
+            if result['success']:
+                # Update payment reference
+                update_payment_status(
+                    payment,
+                    'pending',
+                    chapa_reference=result.get('reference')
+                )
+                
+                return Response({
+                    'success': True,
+                    'checkout_url': result.get('checkout_url'),
+                    'payment_id': str(payment.payment_id),
+                    'amount': str(payment.amount),
+                    'currency': payment.currency,
+                }, status=status.HTTP_200_OK)
+            else:
+                error_msg = result.get('error', 'Unknown error')
+                update_payment_status(
+                    payment,
+                    'failed',
+                    error_message=error_msg
+                )
+                
+                return Response({
+                    'success': False,
+                    'error': error_msg,
+                }, status=status.HTTP_400_BAD_REQUEST)
+                
+        except ValueError as e:
+            logger.error(f"Configuration error: {str(e)}")
+            return Response(
+                {'error': f'Configuration error: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error during payment initiation: {str(e)}")
+            return Response(
+                {'error': f'Unexpected error: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class PaymentViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing payments.
+    
+    Provides:
+    - GET /api/payments/ - List all payments
+    - GET /api/payments/{id}/ - Retrieve a specific payment
+    - POST /api/payments/verify/ - Verify payment status with Chapa
+    
+    Additional actions:
+    - POST /api/payments/{id}/verify_status/ - Verify specific payment status
+    """
+    queryset = Payment.objects.all()
+    serializer_class = PaymentSerializer
+    permission_classes = [IsAuthenticated]
+    filterset_fields = ['status', 'booking', 'currency']
+    ordering_fields = ['created_at', 'amount', 'status']
+    ordering = ['-created_at']
+
+    def get_queryset(self):
+        """Filter payments based on user role"""
+        user = self.request.user
+        if user.is_authenticated:
+            # Users can see payments for their bookings and bookings for their listings
+            return Payment.objects.filter(
+                Q(booking__guest=user) | Q(booking__listing__host=user)
+            ).distinct()
+        return Payment.objects.none()
+
+    @action(detail=True, methods=['post'])
+    def verify_status(self, request, pk=None):
+        """
+        Verify the status of a specific payment with Chapa
+        
+        Returns:
+            - status: Current payment status (success, failed, pending)
+            - amount: Payment amount
+            - transaction_id: Chapa transaction ID
+        """
+        payment = self.get_object()
+        
+        # Only guest or host can verify payment
+        if payment.booking.guest != request.user and payment.booking.listing.host != request.user:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("You can only verify your own payments.")
+        
+        if not payment.chapa_reference:
+            return Response(
+                {'detail': 'Payment has not been initiated yet.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            chapa_client = ChapaAPIClient()
+            result = chapa_client.verify_payment(payment.chapa_reference)
+            
+            if result['success']:
+                # Update payment status based on Chapa response
+                chapa_status = result.get('status', 'pending').lower()
+                
+                if chapa_status == 'success':
+                    update_payment_status(
+                        payment,
+                        'completed',
+                        transaction_id=result.get('reference'),
+                        payment_method=result.get('method')
+                    )
+                    
+                    # Send confirmation email
+                    send_payment_confirmation_email(payment.booking, payment)
+                    
+                    return Response({
+                        'success': True,
+                        'status': 'completed',
+                        'message': 'Payment completed successfully',
+                        'amount': str(result.get('amount')),
+                        'received_amount': str(result.get('received_amount')),
+                        'transaction_id': result.get('reference'),
+                    }, status=status.HTTP_200_OK)
+                    
+                elif chapa_status == 'failed':
+                    update_payment_status(
+                        payment,
+                        'failed',
+                        error_message='Payment failed on Chapa'
+                    )
+                    
+                    send_payment_failure_email(
+                        payment.booking,
+                        payment,
+                        'Your payment failed. Please try again.'
+                    )
+                    
+                    return Response({
+                        'success': False,
+                        'status': 'failed',
+                        'message': 'Payment failed',
+                    }, status=status.HTTP_400_BAD_REQUEST)
+                    
+                else:  # pending
+                    return Response({
+                        'success': True,
+                        'status': 'pending',
+                        'message': 'Payment is still pending',
+                    }, status=status.HTTP_200_OK)
+            else:
+                return Response({
+                    'success': False,
+                    'error': result.get('error', 'Failed to verify payment'),
+                }, status=status.HTTP_400_BAD_REQUEST)
+                
+        except ValueError as e:
+            logger.error(f"Configuration error: {str(e)}")
+            return Response(
+                {'error': f'Configuration error: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error during payment verification: {str(e)}")
+            return Response(
+                {'error': f'Unexpected error: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['post'], permission_classes=[AllowAny])
+    def verify(self, request):
+        """
+        Verify payment status via callback from Chapa
+        
+        Expected data:
+        - tx_ref: Transaction reference (payment_id)
+        """
+        tx_ref = request.data.get('tx_ref')
+        
+        if not tx_ref:
+            return Response(
+                {'error': 'tx_ref parameter is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            payment = Payment.objects.get(payment_id=tx_ref)
+        except Payment.DoesNotExist:
+            return Response(
+                {'error': 'Payment not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        try:
+            chapa_client = ChapaAPIClient()
+            result = chapa_client.verify_payment(payment.chapa_reference or tx_ref)
+            
+            if result['success']:
+                chapa_status = result.get('status', 'pending').lower()
+                
+                if chapa_status == 'success':
+                    update_payment_status(
+                        payment,
+                        'completed',
+                        transaction_id=result.get('reference'),
+                        payment_method=result.get('method')
+                    )
+                    
+                    send_payment_confirmation_email(payment.booking, payment)
+                    
+                    return Response({
+                        'success': True,
+                        'status': 'completed',
+                        'message': 'Payment verified successfully',
+                    }, status=status.HTTP_200_OK)
+                    
+                elif chapa_status == 'failed':
+                    update_payment_status(
+                        payment,
+                        'failed',
+                        error_message='Payment failed'
+                    )
+                    
+                    return Response({
+                        'success': False,
+                        'status': 'failed',
+                        'message': 'Payment failed',
+                    }, status=status.HTTP_400_BAD_REQUEST)
+                    
+                else:
+                    return Response({
+                        'success': True,
+                        'status': 'pending',
+                        'message': 'Payment verification pending',
+                    }, status=status.HTTP_200_OK)
+            else:
+                return Response({
+                    'error': result.get('error', 'Verification failed'),
+                }, status=status.HTTP_400_BAD_REQUEST)
+                
+        except Exception as e:
+            logger.error(f"Error verifying payment: {str(e)}")
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
 
 class ReviewViewSet(viewsets.ModelViewSet):
     """
@@ -213,3 +502,4 @@ class ReviewViewSet(viewsets.ModelViewSet):
             from rest_framework.exceptions import PermissionDenied
             raise PermissionDenied("You can only delete your own reviews.")
         instance.delete()
+

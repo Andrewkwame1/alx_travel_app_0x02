@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
-from .models import Listing, Booking, Review
+from .models import Listing, Booking, Review, Payment
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -75,3 +75,18 @@ class BookingSerializer(serializers.ModelSerializer):
         if data['check_in_date'] >= data['check_out_date']:
             raise serializers.ValidationError("Check-out date must be after check-in date.")
         return data
+
+
+class PaymentSerializer(serializers.ModelSerializer):
+    booking = BookingSerializer(read_only=True)
+    booking_id = serializers.UUIDField(write_only=True, required=False)
+
+    class Meta:
+        model = Payment
+        fields = [
+            'payment_id', 'booking', 'booking_id', 'amount', 'currency', 'status',
+            'transaction_id', 'chapa_reference', 'payment_method', 'created_at',
+            'updated_at', 'completed_at', 'error_message'
+        ]
+        read_only_fields = ['payment_id', 'transaction_id', 'chapa_reference', 'created_at', 'updated_at', 'completed_at']
+

@@ -15,6 +15,9 @@ The ALX Travel App API mirrors real-world travel booking platforms like Airbnb a
 ✅ **Advanced Filtering & Search** - Filter listings by location, availability, sort by price, etc.  
 ✅ **Custom Actions** - Additional endpoints for common workflows (my_listings, my_bookings, cancel, confirm)  
 ✅ **Comprehensive Error Handling** - Meaningful error messages and proper HTTP status codes  
+✅ **🆕 Chapa Payment Gateway Integration** - Secure payment processing for bookings  
+✅ **🆕 Payment Transaction Tracking** - Full payment history and status management  
+✅ **🆕 Email Notifications** - Automated confirmation emails after successful payments  
 
 ## Project Structure
 
@@ -24,16 +27,27 @@ alx_travel_app/
 │   ├── settings.py              # Django configuration (MySQL database, installed apps, middleware)
 │   ├── urls.py                  # Main URL configuration with Swagger routes
 │   ├── wsgi.py                  # WSGI application
-│   └── asgi.py                  # ASGI application
-├── listings/                    # Django app for listings and bookings
-│   ├── models.py                # Listing, Booking, Review models
-│   ├── serializers.py           # DRF serializers for API
-│   ├── views.py                 # ViewSets with CRUD operations
+│   ├── asgi.py                  # ASGI application
+│   └── celery.py                # Celery configuration for async tasks
+├── listings/                    # Django app for listings, bookings, and payments
+│   ├── models.py                # Listing, Booking, Review, Payment models
+│   ├── serializers.py           # DRF serializers for API (includes PaymentSerializer)
+│   ├── views.py                 # ViewSets with CRUD operations (includes PaymentViewSet)
+│   ├── chapa_utils.py           # Chapa API integration utilities
+│   ├── email_tasks.py           # Email notification functions
 │   ├── urls.py                  # API route configuration with routers
 │   ├── admin.py                 # Django admin configuration
-│   └── tests.py                 # Unit tests
+│   ├── tests.py                 # Unit tests
+│   ├── tests_payment.py         # Payment integration tests
+│   └── migrations/
+│       ├── 0001_initial.py
+│       └── 0002_payment.py      # Payment model migration
 ├── manage.py                    # Django management script
-└── requirements.txt             # Python dependencies
+├── requirements.txt             # Python dependencies
+├── PAYMENT_INTEGRATION.md       # Detailed payment integration guide
+├── TESTING_GUIDE_PAYMENTS.md    # Payment testing guide
+├── QUICKSTART_PAYMENTS.md       # Quick start for payment setup
+└── README.md                    # This file
 ```
 
 ## Installation & Setup
@@ -80,7 +94,30 @@ DB_USER=root
 DB_PASSWORD=your_password
 DB_HOST=localhost
 DB_PORT=3306
+
+# Chapa Payment Gateway Configuration (NEW)
+CHAPA_SECRET_KEY=CHASECK_TEST_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+CHAPA_API_URL=https://api.chapa.co/v1
+CHAPA_CALLBACK_URL=http://localhost:8000/api/payments/verify/
+
+# Email Configuration
+EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend
+EMAIL_HOST=smtp.gmail.com
+EMAIL_PORT=587
+EMAIL_USE_TLS=True
+EMAIL_HOST_USER=your-email@gmail.com
+EMAIL_HOST_PASSWORD=your-app-password
+
+# Celery Configuration (Optional)
+CELERY_BROKER_URL=redis://localhost:6379/0
+CELERY_RESULT_BACKEND=redis://localhost:6379/0
 ```
+
+**Getting Chapa API Keys:**
+1. Create account at https://developer.chapa.co/
+2. Navigate to Settings/API Keys
+3. Copy your Secret Key (starts with CHASECK_TEST_ for sandbox)
+4. Add to `.env` as `CHAPA_SECRET_KEY`
 
 ### 5. Run Migrations
 
@@ -157,13 +194,42 @@ Base URL: http://localhost:8000/api/
 | PUT | `/api/reviews/{id}/` | Update a review | Yes* |
 | DELETE | `/api/reviews/{id}/` | Delete a review | Yes* |
 
+### 🆕 Payments Management (Chapa Integration)
+
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---|
+| GET | `/api/payments/` | List your payments | Yes |
+| GET | `/api/payments/{id}/` | Get payment details | Yes* |
+| POST | `/api/bookings/{id}/initiate_payment/` | Initiate payment for booking | Yes* |
+| POST | `/api/payments/{id}/verify_status/` | Verify payment status | Yes* |
+| POST | `/api/payments/verify/` | Webhook callback verification | No |
+
 **Auth Legend:**
 - `Yes` = Authentication required
 - `No` = Public endpoint
 - `Yes*` = Only resource owner
 - `Yes**` = Only listing host
 
-## API Request/Response Examples
+## 🆕 Payment Integration Documentation
+
+For comprehensive payment integration guide, see:
+- **[PAYMENT_INTEGRATION.md](PAYMENT_INTEGRATION.md)** - Complete integration documentation
+- **[TESTING_GUIDE_PAYMENTS.md](TESTING_GUIDE_PAYMENTS.md)** - Step-by-step testing guide
+- **[QUICKSTART_PAYMENTS.md](QUICKSTART_PAYMENTS.md)** - Quick start setup
+
+### Payment Flow Example
+
+```
+1. User creates booking (Payment created automatically)
+2. User calls POST /api/bookings/{id}/initiate_payment/
+3. Receives checkout_url from Chapa
+4. User completes payment on Chapa
+5. User calls POST /api/payments/{id}/verify_status/
+6. On success:
+   - Payment status → 'completed'
+   - Booking status → 'confirmed'
+   - Confirmation email sent
+```
 
 ### 1. List All Listings
 

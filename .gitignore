@@ -2,31 +2,62 @@
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
 .Python
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# Virtualenv
 env/
 venv/
 ENV/
-env.bak/
-venv.bak/
+.venv/
 
 # Django
 *.log
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
+media/
+staticfiles/
+
+# Environment variables
+.env
+.env.*
+
+# Unit test / coverage
+.pytest_cache/
+.tox/
+.cache
+.coverage
+coverage.xml
 
 # IDE
 .vscode/
 .idea/
-.zencoder/
-.idea/workspace.xml
-*.swp
-*.swo
+*.sublime-workspace
+*.sublime-project
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Environment variables
-.env
+# Editor temporary files
+*.swp
+*.swo
+
+# Celery
+celerybeat-schedule
+
+# mypy
+.mypy_cache/
+
+# Notebook
+.ipynb_checkpoints/
+
+# Secrets
+secrets.json

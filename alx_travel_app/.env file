@@ -1,0 +1,11 @@
+# .env file
+CHAPA_SECRET_KEY=your_test_secret_key_here
+CHAPA_BASE_URL=https://api.chapa.co/v1
+```
+
+Update your `.gitignore` to exclude `.env`:
+```
+.env
+*.pyc
+__pycache__/
+db.sqlite3

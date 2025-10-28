@@ -46,6 +46,11 @@ class Booking(models.Model):
     class Meta:
         ordering = ['-created_at']
 
+    @property
+    def payment(self):
+        """Return the first related payment if any (convenience for tests/usage)."""
+        return getattr(self, 'payments', None).first() if hasattr(self, 'payments') else None
+
 
 class Review(models.Model):
     review_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -61,3 +66,34 @@ class Review(models.Model):
     class Meta:
         ordering = ['-created_at']
         unique_together = ['listing', 'reviewer']  # One review per user per listing
+
+
+class Payment(models.Model):
+    PAYMENT_STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+        ('cancelled', 'Cancelled'),
+    ]
+
+    payment_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    # Allow multiple payments per booking but provide a Booking.payment convenience property
+    booking = models.ForeignKey(Booking, on_delete=models.CASCADE, related_name='payments')
+    amount = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(0)])
+    currency = models.CharField(max_length=3, default='ETB')
+    status = models.CharField(max_length=20, choices=PAYMENT_STATUS_CHOICES, default='pending')
+    transaction_id = models.CharField(max_length=255, unique=True, null=True, blank=True)
+    chapa_reference = models.CharField(max_length=255, unique=True, null=True, blank=True)
+    payment_method = models.CharField(max_length=100, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    error_message = models.TextField(null=True, blank=True)
+
+    def __str__(self):
+        return f"Payment {self.payment_id} for Booking {self.booking.booking_id}"
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name_plural = 'Payments'
+

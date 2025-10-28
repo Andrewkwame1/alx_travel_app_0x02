@@ -49,14 +49,15 @@ INSTALLED_APPS = [
 
     # Third-party apps
     'rest_framework',
+    'rest_framework.authtoken',
     'corsheaders',
     'drf_yasg',
 ]
 
 REST_FRAMEWORK = {
+    # Prefer token authentication for API usage in this project/tests.
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.SessionAuthentication',
-        'rest_framework.authentication.TokenAuthentication',  # Optional: for token-based auth
+        'rest_framework.authentication.TokenAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
@@ -107,6 +108,16 @@ DATABASES = {
         'PORT': env('DB_PORT', default='3306'),
     }
 }
+
+# Use in-memory SQLite when running tests to avoid requiring a MySQL test DB locally.
+import sys
+if 'test' in sys.argv or 'pytest' in sys.argv:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': ':memory:',
+        }
+    }
 
 
 # Password validation
