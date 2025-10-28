@@ -61,3 +61,6 @@ celerybeat-schedule
 
 # Secrets
 secrets.json
+
+# Ignore generated docs folder
+docs/
